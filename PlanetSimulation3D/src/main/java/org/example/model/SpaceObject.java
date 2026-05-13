@@ -31,5 +31,6 @@ public class SpaceObject {
     public double getOrbitSpeed() { return orbitSpeed; }
     public double getLatitude() { return latitude; }
     public double getLongitude() { return longitude; }
+    public String getObjectType() { return objectType; }
     public String getTextureUrl() { return textureUrl; } // <--- GETTER MỚI
 }

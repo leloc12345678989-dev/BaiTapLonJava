@@ -2,13 +2,23 @@ package org.example.gui;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.*;
+import javafx.scene.Cursor;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
 import javafx.scene.image.Image;
 import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.ScrollEvent;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.PhongMaterial;
 import javafx.scene.shape.Box;
@@ -21,6 +31,7 @@ import org.example.dal.PlanetDAO;
 import org.example.model.Planet;
 import org.example.model.SpaceObject;
 
+import java.text.DecimalFormat;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,10 +46,21 @@ import java.util.Map;
  */
 public class PlanetApp extends Application {
 
+    private static final double MIN_CAMERA_Z = -500000.0;
+    private static final double MAX_CAMERA_Z = -500.0;
+
     private double mouseOldX, mouseOldY;
     private final Map<String, Sphere> nodes   = new HashMap<>();
     private final Map<String, Group>  systems = new HashMap<>();
     private boolean isPaused = false;
+    private VBox planetInfoPanel;
+    private Label planetInfoTitle;
+    private Label planetInfoRadius;
+    private Label planetInfoMass;
+    private Label planetInfoDistance;
+    private Label planetInfoId;
+    private final DecimalFormat numberFormat = new DecimalFormat("#,##0.###");
+    private final DecimalFormat scientificFormat = new DecimalFormat("0.###E0");
 
     @Override
     public void start(Stage stage) {
@@ -49,7 +71,10 @@ public class PlanetApp extends Application {
 
         // ── Tab 1: Mô phỏng 3D ───────────────────────────────
         SubScene sim3D = build3DScene(planets, satellites);
-        StackPane simPane = new StackPane(sim3D);
+        planetInfoPanel = createPlanetInfoPanel();
+        StackPane simPane = new StackPane(sim3D, planetInfoPanel);
+        StackPane.setAlignment(planetInfoPanel, Pos.TOP_RIGHT);
+        StackPane.setMargin(planetInfoPanel, new Insets(8));
         sim3D.widthProperty() .bind(simPane.widthProperty());
         sim3D.heightProperty().bind(simPane.heightProperty());
 
@@ -113,6 +138,20 @@ public class PlanetApp extends Application {
             label.setTranslateY(-(scaledRadius + 35));
 
             Group planetSys = new Group(sphere, label);
+            sphere.setCursor(Cursor.HAND);
+            label.setCursor(Cursor.HAND);
+            sphere.setOnMouseClicked(event -> {
+                if (event.getButton() == MouseButton.PRIMARY) {
+                    showPlanetInfo(p);
+                    event.consume();
+                }
+            });
+            label.setOnMouseClicked(event -> {
+                if (event.getButton() == MouseButton.PRIMARY) {
+                    showPlanetInfo(p);
+                    event.consume();
+                }
+            });
             nodes.put(p.getName(), sphere);
             systems.put(p.getName(), planetSys);
             universeGroup.getChildren().add(planetSys);
@@ -197,9 +236,110 @@ public class PlanetApp extends Application {
             rotX.setAngle(rotX.getAngle() - (me.getSceneY() - mouseOldY) * 0.2);
             mouseOldX = me.getSceneX(); mouseOldY = me.getSceneY();
         });
-        sub.setOnScroll(se -> camera.setTranslateZ(camera.getTranslateZ() + se.getDeltaY() * 70));
+        sub.setOnScroll(se -> zoomCameraToMouse(camera, sub, se));
 
         return sub;
+    }
+
+    private void zoomCameraToMouse(PerspectiveCamera camera, SubScene sub, ScrollEvent event) {
+        double oldZ = camera.getTranslateZ();
+        double newZ = clamp(oldZ + event.getDeltaY() * 70, MIN_CAMERA_Z, MAX_CAMERA_Z);
+        if (newZ == oldZ) {
+            return;
+        }
+
+        double mouseX = event.getX();
+        double mouseY = event.getY();
+        double[] before = pointOnFocusPlane(camera, sub, mouseX, mouseY, -oldZ);
+        double[] after = pointOnFocusPlane(camera, sub, mouseX, mouseY, -newZ);
+
+        camera.setTranslateX(camera.getTranslateX() + before[0] - after[0]);
+        camera.setTranslateY(camera.getTranslateY() + before[1] - after[1]);
+        camera.setTranslateZ(newZ);
+        event.consume();
+    }
+
+    private double[] pointOnFocusPlane(PerspectiveCamera camera, SubScene sub,
+                                       double mouseX, double mouseY, double distance) {
+        double width = Math.max(1, sub.getWidth());
+        double height = Math.max(1, sub.getHeight());
+        double aspect = width / height;
+        double halfField = Math.tan(Math.toRadians(camera.getFieldOfView()) / 2.0);
+
+        double halfWidth;
+        double halfHeight;
+        if (camera.isVerticalFieldOfView()) {
+            halfHeight = distance * halfField;
+            halfWidth = halfHeight * aspect;
+        } else {
+            halfWidth = distance * halfField;
+            halfHeight = halfWidth / aspect;
+        }
+
+        double normalizedX = (mouseX / width) * 2.0 - 1.0;
+        double normalizedY = (mouseY / height) * 2.0 - 1.0;
+        return new double[]{
+                camera.getTranslateX() + normalizedX * halfWidth,
+                camera.getTranslateY() + normalizedY * halfHeight
+        };
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private VBox createPlanetInfoPanel() {
+        planetInfoTitle = new Label();
+        planetInfoTitle.setStyle("-fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: white;");
+
+        Button closeButton = new Button("X");
+        closeButton.setFocusTraversable(false);
+        closeButton.setStyle(
+                "-fx-background-color: transparent;" +
+                "-fx-text-fill: #d1d5db;" +
+                "-fx-font-size: 11px;" +
+                "-fx-font-weight: bold;" +
+                "-fx-padding: 0 6 0 6;"
+        );
+        closeButton.setOnAction(event -> planetInfoPanel.setVisible(false));
+
+        HBox header = new HBox(6, planetInfoTitle, closeButton);
+        header.setAlignment(Pos.CENTER_LEFT);
+
+        planetInfoId = createInfoLabel();
+        planetInfoRadius = createInfoLabel();
+        planetInfoMass = createInfoLabel();
+        planetInfoDistance = createInfoLabel();
+
+        VBox panel = new VBox(3, header, planetInfoId, planetInfoRadius, planetInfoMass, planetInfoDistance);
+        panel.setMaxWidth(260);
+        panel.setMaxHeight(Region.USE_PREF_SIZE);
+        panel.setPadding(new Insets(7, 9, 7, 9));
+        panel.setStyle(
+                "-fx-background-color: rgba(9, 14, 24, 0.82);" +
+                "-fx-background-radius: 6;" +
+                "-fx-border-color: rgba(255,255,255,0.16);" +
+                "-fx-border-radius: 6;"
+        );
+        panel.setVisible(false);
+        return panel;
+    }
+
+    private Label createInfoLabel() {
+        Label label = new Label();
+        label.setWrapText(true);
+        label.setStyle("-fx-font-size: 11px; -fx-text-fill: #e5e7eb;");
+        return label;
+    }
+
+    private void showPlanetInfo(Planet planet) {
+        planetInfoTitle.setText(planet.getName());
+        planetInfoId.setText("Ma: " + planet.getId());
+        planetInfoRadius.setText("BK: " + numberFormat.format(planet.getRadius()) + " km");
+        planetInfoMass.setText("KL: " + scientificFormat.format(planet.getMass()) + " kg");
+        planetInfoDistance.setText("Cach MT: "
+                + numberFormat.format(planet.getDistanceFromSun()) + " trieu km");
+        planetInfoPanel.setVisible(true);
     }
 
     // =========================================================
@@ -228,7 +368,12 @@ public class PlanetApp extends Application {
         name.setFont(Font.font("Arial Bold", 13));
         name.setTranslateY(-20);
 
-        return new Group(body, left, right, name);
+        Text speed = new Text(String.format("%.4f km/s", s.getOrbitSpeed()));
+        speed.setFill(Color.web("#00ff88"));
+        speed.setFont(Font.font("Courier New", 10));
+        speed.setTranslateY(-8);
+
+        return new Group(body, left, right, name, speed);
     }
 
     public static void main(String[] args) { launch(args); }

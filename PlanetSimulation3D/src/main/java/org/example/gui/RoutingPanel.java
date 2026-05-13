@@ -16,9 +16,12 @@ import javafx.util.StringConverter;
 import org.example.dal.GroundStationDAO;
 import org.example.dal.PlanetDAO;
 import org.example.dal.RoutingDAO;
+import org.example.dal.SpaceObjectDAO;
 import org.example.model.*;
+import org.example.service.PhysicsService;
 import org.example.service.RoutingService;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -35,6 +38,7 @@ public class RoutingPanel {
     private final PlanetDAO        planetDAO  = new PlanetDAO();
     private final GroundStationDAO gsDAO      = new GroundStationDAO();
     private final RoutingDAO       routingDAO = new RoutingDAO();
+    private final SpaceObjectDAO   objectDAO  = new SpaceObjectDAO();
     private final RoutingService   svc        = new RoutingService();
 
     // ── Dữ liệu ──────────────────────────────────────────────
@@ -54,6 +58,12 @@ public class RoutingPanel {
 
     // ── Controls (Tab 3) ──────────────────────────────────────
     private TableView<String[]> tblHistory;
+
+    private TableView<SpaceObject> tblObjects;
+    private ComboBox<Planet>       cbObjectPlanet;
+    private ComboBox<String>       cbObjectType;
+    private TextField              tfObjectName, tfObjectLat, tfObjectLon, tfObjectAlt, tfObjectTexture;
+    private Label                  lblObjectSpeed;
 
     // ─────────────────────────────────────────────────────────
     public BorderPane build() {
@@ -79,7 +89,10 @@ public class RoutingPanel {
 
         t3.setOnSelectionChanged(e -> { if (t3.isSelected()) refreshHistory(); });
 
-        tabs.getTabs().addAll(t1, t2, t3);
+        Tab objectTab = tab("Objects", buildTabObjects());
+        objectTab.setOnSelectionChanged(e -> { if (objectTab.isSelected()) reloadObjectTable(); });
+
+        tabs.getTabs().addAll(t1, t2, objectTab, t3);
         root.setCenter(tabs);
         return root;
     }
@@ -244,6 +257,96 @@ public class RoutingPanel {
     // =========================================================
     //  TAB 3 – LỊCH SỬ
     // =========================================================
+    private BorderPane buildTabObjects() {
+        BorderPane pane = new BorderPane();
+        pane.setStyle("-fx-background-color:#0d1117;");
+        pane.setPadding(new Insets(14));
+
+        tblObjects = new TableView<>();
+        tblObjects.setStyle("-fx-background-color:#161b22;-fx-text-fill:#c9d1d9;");
+        tblObjects.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY);
+        tblObjects.getColumns().addAll(
+                strCol("Name", SpaceObject::getObjectName),
+                strCol("Planet ID", o -> String.valueOf(o.getPlanetId())),
+                strCol("Type", SpaceObject::getObjectType),
+                strCol("Lat", o -> String.format("%.3f", o.getLatitude())),
+                strCol("Lon", o -> String.format("%.3f", o.getLongitude())),
+                strCol("Alt km", o -> String.format("%.1f", o.getAltitude())),
+                strCol("Speed km/s", o -> String.format("%.4f", o.getOrbitSpeed()))
+        );
+        tblObjects.getSelectionModel().selectedItemProperty()
+                .addListener((obs, old, selected) -> fillObjectForm(selected));
+
+        cbObjectPlanet = combo();
+        planets.forEach(p -> cbObjectPlanet.getItems().add(p));
+        StringConverter<Planet> planetConv = planetConverter();
+        cbObjectPlanet.setConverter(planetConv);
+        applyWhiteComboCells(cbObjectPlanet, planetConv);
+        cbObjectPlanet.setPromptText("Planet...");
+        cbObjectPlanet.setOnAction(e -> updateObjectSpeedPreview());
+
+        cbObjectType = combo();
+        cbObjectType.getItems().addAll(
+                "Communication Satellite",
+                "Satellite",
+                "Space Station",
+                "Scientific Probe"
+        );
+        cbObjectType.setValue("Communication Satellite");
+        applyWhiteComboCells(cbObjectType, new StringConverter<>() {
+            public String toString(String value) { return value == null ? "" : value; }
+            public String fromString(String value) { return value; }
+        });
+
+        tfObjectName = tf("Object name");
+        tfObjectLat = tf("Latitude (-90..90)");
+        tfObjectLon = tf("Longitude (-180..180)");
+        tfObjectAlt = tf("Altitude km");
+        tfObjectTexture = tf("Texture URL");
+        lblObjectSpeed = lbl("OrbitSpeed: -- km/s", "#58a6ff");
+        tfObjectAlt.textProperty().addListener((obs, old, value) -> updateObjectSpeedPreview());
+
+        Button btnAdd = btn("ADD", "#00ff88");
+        Button btnUpdate = btn("UPDATE", "#58a6ff");
+        Button btnDelete = btn("DELETE", "#ff6b6b");
+        Button btnClear = btn("CLEAR", "#8b949e");
+        btnAdd.setOnAction(e -> onAddObject());
+        btnUpdate.setOnAction(e -> onUpdateObject());
+        btnDelete.setOnAction(e -> onDeleteObject());
+        btnClear.setOnAction(e -> clearObjectForm());
+
+        HBox row1 = new HBox(8, btnAdd, btnUpdate);
+        HBox row2 = new HBox(8, btnDelete, btnClear);
+        HBox.setHgrow(btnAdd, Priority.ALWAYS);
+        HBox.setHgrow(btnUpdate, Priority.ALWAYS);
+        HBox.setHgrow(btnDelete, Priority.ALWAYS);
+        HBox.setHgrow(btnClear, Priority.ALWAYS);
+
+        VBox form = new VBox(10);
+        form.setPrefWidth(320);
+        form.setStyle("-fx-background-color:#161b22;-fx-background-radius:8;-fx-padding:16;");
+        form.getChildren().addAll(
+                hdr2("SPACE OBJECT"),
+                hdr2("Planet"), cbObjectPlanet,
+                hdr2("Type"), cbObjectType,
+                hdr2("Name"), tfObjectName,
+                hdr2("Latitude"), tfObjectLat,
+                hdr2("Longitude"), tfObjectLon,
+                hdr2("Altitude"), tfObjectAlt,
+                lblObjectSpeed,
+                hdr2("Texture"), tfObjectTexture,
+                row1, row2
+        );
+
+        pane.setCenter(tblObjects);
+        BorderPane.setMargin(form, new Insets(0, 0, 0, 14));
+        pane.setRight(form);
+
+        reloadObjectTable();
+        clearObjectForm();
+        return pane;
+    }
+
     private BorderPane buildTab3() {
         BorderPane pane = new BorderPane();
         pane.setStyle("-fx-background-color:#0d1117;");
@@ -299,6 +402,194 @@ public class RoutingPanel {
     // =========================================================
     //  LOGIC
     // =========================================================
+    private void onAddObject() {
+        try {
+            SpaceObject object = objectFromForm(0);
+            int newId = objectDAO.insert(object);
+            if (newId > 0) {
+                refreshAfterObjectChange();
+                clearObjectForm();
+                alert("Saved object: " + object.getObjectName());
+            } else {
+                alert("Cannot save object.");
+            }
+        } catch (IllegalArgumentException ex) {
+            alert(ex.getMessage());
+        }
+    }
+
+    private void onUpdateObject() {
+        SpaceObject selected = tblObjects.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            alert("Select an object to update.");
+            return;
+        }
+        try {
+            SpaceObject object = objectFromForm(selected.getObjectId());
+            if (objectDAO.update(object)) {
+                refreshAfterObjectChange();
+                alert("Updated object: " + object.getObjectName());
+            } else {
+                alert("Cannot update object.");
+            }
+        } catch (IllegalArgumentException ex) {
+            alert(ex.getMessage());
+        }
+    }
+
+    private void onDeleteObject() {
+        SpaceObject selected = tblObjects.getSelectionModel().getSelectedItem();
+        if (selected == null) {
+            alert("Select an object to delete.");
+            return;
+        }
+        if (objectDAO.delete(selected.getObjectId())) {
+            refreshAfterObjectChange();
+            clearObjectForm();
+            alert("Deleted object: " + selected.getObjectName());
+        } else {
+            alert("Cannot delete object.");
+        }
+    }
+
+    private SpaceObject objectFromForm(int objectId) {
+        Planet planet = cbObjectPlanet.getValue();
+        if (planet == null) {
+            throw new IllegalArgumentException("Select a planet.");
+        }
+
+        String name = requireText(tfObjectName, "Object name");
+        double lat = parseDouble(tfObjectLat, "Latitude");
+        double lon = parseDouble(tfObjectLon, "Longitude");
+        double alt = parseDouble(tfObjectAlt, "Altitude");
+        validateRange(lat, -90, 90, "Latitude");
+        validateRange(lon, -180, 180, "Longitude");
+        if (alt < 0) {
+            throw new IllegalArgumentException("Altitude must be >= 0.");
+        }
+
+        String type = cbObjectType.getValue();
+        if (type == null || type.isBlank()) {
+            type = "Communication Satellite";
+        }
+        String texture = tfObjectTexture.getText() == null ? "" : tfObjectTexture.getText().trim();
+        double speed = calculateObjectSpeed(planet, alt);
+
+        return new SpaceObject(objectId, name, planet.getId(), lat, lon, alt, speed, type,
+                texture.isBlank() ? null : texture);
+    }
+
+    private void fillObjectForm(SpaceObject object) {
+        if (object == null || cbObjectPlanet == null) {
+            return;
+        }
+        cbObjectPlanet.setValue(findPlanetById(object.getPlanetId()));
+        if (object.getObjectType() != null && !cbObjectType.getItems().contains(object.getObjectType())) {
+            cbObjectType.getItems().add(object.getObjectType());
+        }
+        cbObjectType.setValue(object.getObjectType() == null ? "Communication Satellite" : object.getObjectType());
+        tfObjectName.setText(object.getObjectName());
+        tfObjectLat.setText(String.valueOf(object.getLatitude()));
+        tfObjectLon.setText(String.valueOf(object.getLongitude()));
+        tfObjectAlt.setText(String.valueOf(object.getAltitude()));
+        tfObjectTexture.setText(object.getTextureUrl() == null ? "" : object.getTextureUrl());
+        updateObjectSpeedPreview();
+    }
+
+    private void clearObjectForm() {
+        if (tblObjects != null) {
+            tblObjects.getSelectionModel().clearSelection();
+        }
+        if (cbObjectPlanet != null) {
+            cbObjectPlanet.setValue(planets.isEmpty() ? null : planets.get(0));
+        }
+        if (cbObjectType != null) {
+            cbObjectType.setValue("Communication Satellite");
+        }
+        if (tfObjectName != null) {
+            tfObjectName.clear();
+            tfObjectLat.clear();
+            tfObjectLon.clear();
+            tfObjectAlt.clear();
+            tfObjectTexture.clear();
+        }
+        updateObjectSpeedPreview();
+    }
+
+    private void updateObjectSpeedPreview() {
+        if (lblObjectSpeed == null) {
+            return;
+        }
+        Planet planet = cbObjectPlanet == null ? null : cbObjectPlanet.getValue();
+        if (planet == null || tfObjectAlt == null || tfObjectAlt.getText().isBlank()) {
+            lblObjectSpeed.setText("OrbitSpeed: -- km/s");
+            return;
+        }
+        try {
+            double alt = Double.parseDouble(tfObjectAlt.getText().trim());
+            if (alt < 0) {
+                lblObjectSpeed.setText("OrbitSpeed: invalid altitude");
+                return;
+            }
+            lblObjectSpeed.setText(String.format("OrbitSpeed: %.4f km/s", calculateObjectSpeed(planet, alt)));
+        } catch (NumberFormatException ex) {
+            lblObjectSpeed.setText("OrbitSpeed: invalid altitude");
+        }
+    }
+
+    private void refreshAfterObjectChange() {
+        loadData();
+        reloadObjectTable();
+        refreshRouteCombos();
+    }
+
+    private Planet findPlanetById(int planetId) {
+        return planets.stream()
+                .filter(p -> p.getId() == planetId)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private double calculateObjectSpeed(Planet planet, double altitudeKm) {
+        return PhysicsService.calculateVelocity(planet.getMass(), planet.getRadius(), altitudeKm);
+    }
+
+    private boolean isRoutingObject(SpaceObject object) {
+        String type = object.getObjectType();
+        if (type == null || type.isBlank()) {
+            return true;
+        }
+        String normalized = Normalizer.normalize(type, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")
+                .toLowerCase();
+        return normalized.contains("communication")
+                || normalized.contains("satellite")
+                || normalized.contains("lien lac")
+                || normalized.contains("ve tinh");
+    }
+
+    private String requireText(TextField field, String label) {
+        String value = field.getText() == null ? "" : field.getText().trim();
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(label + " is required.");
+        }
+        return value;
+    }
+
+    private double parseDouble(TextField field, String label) {
+        try {
+            return Double.parseDouble(requireText(field, label));
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException(label + " must be a number.");
+        }
+    }
+
+    private void validateRange(double value, double min, double max, String label) {
+        if (value < min || value > max) {
+            throw new IllegalArgumentException(label + " must be from " + min + " to " + max + ".");
+        }
+    }
+
     private void onPlanetChanged() {
         Planet sel = cbPlanet.getValue();
         if (sel == null) return;
@@ -306,7 +597,9 @@ public class RoutingPanel {
         cbA.getItems().clear(); cbB.getItems().clear();
         gsDAO.getByPlanet(sel.getId()).forEach(gs -> { cbA.getItems().add(gs); cbB.getItems().add(gs); });
         satellites = planetDAO.getAllSpaceObjects().stream()
-                .filter(s -> s.getPlanetId() == sel.getId()).toList();
+                .filter(s -> s.getPlanetId() == sel.getId())
+                .filter(this::isRoutingObject)
+                .toList();
         drawIdle();
     }
 
@@ -470,6 +763,12 @@ public class RoutingPanel {
         if (tblStations == null) return;
         tblStations.getItems().clear();
         gsDAO.getAll().forEach(gs -> tblStations.getItems().add(gs));
+    }
+
+    private void reloadObjectTable() {
+        if (tblObjects == null) return;
+        tblObjects.getItems().clear();
+        objectDAO.getAll().forEach(object -> tblObjects.getItems().add(object));
     }
 
     private void refreshHistory() {
