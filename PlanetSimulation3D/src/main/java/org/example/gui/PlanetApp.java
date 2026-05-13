@@ -32,6 +32,7 @@ import org.example.model.Planet;
 import org.example.model.SpaceObject;
 
 import java.text.DecimalFormat;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,10 +49,14 @@ public class PlanetApp extends Application {
 
     private static final double MIN_CAMERA_Z = -500000.0;
     private static final double MAX_CAMERA_Z = -500.0;
+    private static final double INITIAL_CAMERA_Z = -39000.0;
+    private static final double MOON_ORBIT_RADIUS = 700.0;
 
     private double mouseOldX, mouseOldY;
     private final Map<String, Sphere> nodes   = new HashMap<>();
     private final Map<String, Group>  systems = new HashMap<>();
+    private final Map<String, Group>  satelliteLayers = new HashMap<>();
+    private final List<AnimationTimer> satelliteTimers = new ArrayList<>();
     private boolean isPaused = false;
     private VBox planetInfoPanel;
     private Label planetInfoTitle;
@@ -82,7 +87,7 @@ public class PlanetApp extends Application {
         tab3D.setClosable(false);
 
         // ── Tab 2: Định Tuyến ─────────────────────────────────
-        RoutingPanel routingPanel = new RoutingPanel();
+        RoutingPanel routingPanel = new RoutingPanel(this::refreshSatellitesIn3D);
         BorderPane   routingPane  = routingPanel.build();
 
         Tab tabRoute = new Tab("🛰  Định Tuyến Vệ Tinh", routingPane);
@@ -108,6 +113,11 @@ public class PlanetApp extends Application {
     //  XÂY DỰNG SUBSCENE 3D
     // =========================================================
     private SubScene build3DScene(List<Planet> planets, List<SpaceObject> satellites) {
+        nodes.clear();
+        systems.clear();
+        satelliteLayers.clear();
+        satelliteTimers.clear();
+
         Group universeGroup = new Group();
         PointLight sunLight  = new PointLight(Color.WHITE);
         sunLight.setTranslateZ(-1500);
@@ -137,7 +147,8 @@ public class PlanetApp extends Application {
             label.setFont(Font.font("Arial", 18));
             label.setTranslateY(-(scaledRadius + 35));
 
-            Group planetSys = new Group(sphere, label);
+            Group satelliteLayer = new Group();
+            Group planetSys = new Group(sphere, label, satelliteLayer);
             sphere.setCursor(Cursor.HAND);
             label.setCursor(Cursor.HAND);
             sphere.setOnMouseClicked(event -> {
@@ -154,6 +165,7 @@ public class PlanetApp extends Application {
             });
             nodes.put(p.getName(), sphere);
             systems.put(p.getName(), planetSys);
+            satelliteLayers.put(p.getName(), satelliteLayer);
             universeGroup.getChildren().add(planetSys);
 
             new AnimationTimer() {
@@ -164,36 +176,17 @@ public class PlanetApp extends Application {
         }
 
         // ── Vệ tinh ───────────────────────────────────────────
+        addSatellitesToScene(planets, satellites);
+
         for (Planet p : planets) {
             boolean isSun       = p.getName().equals("Mặt Trời");
             Group   curSys      = systems.get(p.getName());
-            Sphere  pSphere     = nodes.get(p.getName());
-
-            for (SpaceObject s : satellites) {
-                if (s.getPlanetId() != p.getId()) continue;
-
-                Group satModel  = createSatelliteModel(s);
-                double orbitDist = pSphere.getRadius() + (s.getAltitude() / 300.0) + 50;
-                curSys.getChildren().add(satModel);
-
-                new AnimationTimer() {
-                    double angle = s.getLongitude();
-                    @Override public void handle(long now) {
-                        if (!isPaused) {
-                            angle += s.getOrbitSpeed() / 45.0;
-                            satModel.setTranslateX(orbitDist * Math.cos(Math.toRadians(angle)));
-                            satModel.setTranslateZ(orbitDist * Math.sin(Math.toRadians(angle)));
-                            satModel.setRotate(satModel.getRotate() + 0.5);
-                        }
-                    }
-                }.start();
-            }
 
             // Quỹ đạo hành tinh quanh Mặt Trời
             new AnimationTimer() {
-                double angle      = Math.random() * 360;
+                double angle      = initialOrbitAngle(p);
                 double orbitSpeed = isSun ? 0 : 0.04 / Math.sqrt(p.getDistanceFromSun() + 1);
-                double r          = isSun ? 0 : 1500 + Math.log(p.getDistanceFromSun() + 1) * 900;
+                double r          = planetOrbitRadius(p);
 
                 @Override public void handle(long now) {
                     if (!isPaused && !isSun) {
@@ -201,8 +194,8 @@ public class PlanetApp extends Application {
                         double x, z;
                         if (p.getName().equals("Mặt Trăng") && systems.containsKey("Trái Đất")) {
                             Group earth = systems.get("Trái Đất");
-                            x = earth.getTranslateX() + 350 * Math.cos(angle * 4);
-                            z = earth.getTranslateZ() + 350 * Math.sin(angle * 4);
+                            x = earth.getTranslateX() + MOON_ORBIT_RADIUS * Math.cos(angle * 4);
+                            z = earth.getTranslateZ() + MOON_ORBIT_RADIUS * Math.sin(angle * 4);
                         } else {
                             x = r * Math.cos(angle);
                             z = r * Math.sin(angle);
@@ -218,7 +211,7 @@ public class PlanetApp extends Application {
         PerspectiveCamera camera = new PerspectiveCamera(true);
         camera.setNearClip(0.1);
         camera.setFarClip(500000.0);
-        camera.setTranslateZ(-28000);
+        camera.setTranslateZ(INITIAL_CAMERA_Z);
 
         SubScene sub = new SubScene(
                 new Group(universeGroup, sunLight, ambient),
@@ -286,6 +279,92 @@ public class PlanetApp extends Application {
 
     private double clamp(double value, double min, double max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    private void refreshSatellitesIn3D() {
+        PlanetDAO dao = new PlanetDAO();
+        addSatellitesToScene(dao.getAllPlanets(), dao.getAllSpaceObjects());
+    }
+
+    private void addSatellitesToScene(List<Planet> planets, List<SpaceObject> satellites) {
+        clearSatellitesFromScene();
+
+        for (Planet p : planets) {
+            Group satelliteLayer = satelliteLayers.get(p.getName());
+            Sphere pSphere = nodes.get(p.getName());
+            if (satelliteLayer == null || pSphere == null) {
+                continue;
+            }
+
+            for (SpaceObject s : satellites) {
+                if (s.getPlanetId() != p.getId()) continue;
+
+                Group satModel = createSatelliteModel(s);
+                double orbitDist = pSphere.getRadius() + (s.getAltitude() / 300.0) + 50;
+                placeSatelliteOnOrbit(satModel, orbitDist, s.getLatitude(), s.getLongitude());
+                satelliteLayer.getChildren().add(satModel);
+
+                AnimationTimer timer = new AnimationTimer() {
+                    double angle = s.getLongitude();
+                    @Override public void handle(long now) {
+                        if (!isPaused) {
+                            angle += s.getOrbitSpeed() / 45.0;
+                            placeSatelliteOnOrbit(satModel, orbitDist, s.getLatitude(), angle);
+                            satModel.setRotate(satModel.getRotate() + 0.5);
+                        }
+                    }
+                };
+                timer.start();
+                satelliteTimers.add(timer);
+            }
+        }
+    }
+
+    private void clearSatellitesFromScene() {
+        satelliteTimers.forEach(AnimationTimer::stop);
+        satelliteTimers.clear();
+        satelliteLayers.values().forEach(layer -> layer.getChildren().clear());
+    }
+
+    private double planetOrbitRadius(Planet planet) {
+        return switch (planet.getName()) {
+            case "Mặt Trời" -> 0;
+            case "Sao Thủy" -> 1800;
+            case "Sao Kim" -> 3000;
+            case "Trái Đất" -> 4500;
+            case "Mặt Trăng" -> 0;
+            case "Sao Hỏa" -> 6000;
+            case "Sao Mộc" -> 8200;
+            case "Sao Thổ" -> 10800;
+            case "Sao Thiên Vương" -> 13400;
+            case "Sao Hải Vương" -> 16000;
+            default -> 900 + Math.sqrt(Math.max(0, planet.getDistanceFromSun())) * 210;
+        };
+    }
+
+    private double initialOrbitAngle(Planet planet) {
+        return switch (planet.getName()) {
+            case "Sao Thủy" -> 210;
+            case "Sao Kim" -> 145;
+            case "Trái Đất" -> 95;
+            case "Mặt Trăng" -> 95;
+            case "Sao Hỏa" -> 35;
+            case "Sao Mộc" -> 315;
+            case "Sao Thổ" -> 255;
+            case "Sao Thiên Vương" -> 20;
+            case "Sao Hải Vương" -> 285;
+            default -> 0;
+        };
+    }
+
+    private void placeSatelliteOnOrbit(Group satModel, double orbitRadius,
+                                       double inclinationDeg, double phaseDeg) {
+        double phase = Math.toRadians(phaseDeg);
+        double inclination = Math.toRadians(inclinationDeg);
+
+        satModel.setTranslateX(orbitRadius * Math.cos(phase));
+        satModel.setTranslateY(orbitRadius * Math.sin(phase) * Math.sin(inclination));
+        satModel.setTranslateZ(orbitRadius * Math.sin(phase) * Math.cos(inclination));
     }
 
     private VBox createPlanetInfoPanel() {

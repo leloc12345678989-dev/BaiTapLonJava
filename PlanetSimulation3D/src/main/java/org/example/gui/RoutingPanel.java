@@ -34,12 +34,24 @@ import java.util.List;
  */
 public class RoutingPanel {
 
+    private static final double SATELLITE_COLLISION_RADIUS = 35.0;
+    private static final double MOON_ORBIT_RADIUS = 700.0;
+
     // ── DAO & Service ─────────────────────────────────────────
     private final PlanetDAO        planetDAO  = new PlanetDAO();
     private final GroundStationDAO gsDAO      = new GroundStationDAO();
     private final RoutingDAO       routingDAO = new RoutingDAO();
     private final SpaceObjectDAO   objectDAO  = new SpaceObjectDAO();
     private final RoutingService   svc        = new RoutingService();
+    private final Runnable         onObjectsChanged;
+
+    public RoutingPanel() {
+        this(() -> {});
+    }
+
+    public RoutingPanel(Runnable onObjectsChanged) {
+        this.onObjectsChanged = onObjectsChanged == null ? () -> {} : onObjectsChanged;
+    }
 
     // ── Dữ liệu ──────────────────────────────────────────────
     private List<Planet>        planets    = new ArrayList<>();
@@ -130,7 +142,6 @@ public class RoutingPanel {
                 .orElse(null);
         if (earth != null) {
             cbPlanet.setValue(earth);
-            cbPlanet.setDisable(true);
         }
         cbPlanet.setPromptText("Chọn hành tinh...");
 
@@ -474,6 +485,7 @@ public class RoutingPanel {
         }
         String texture = tfObjectTexture.getText() == null ? "" : tfObjectTexture.getText().trim();
         double speed = calculateObjectSpeed(planet, alt);
+        validateNoPlanetCollision(planet, lat, lon, alt);
 
         return new SpaceObject(objectId, name, planet.getId(), lat, lon, alt, speed, type,
                 texture.isBlank() ? null : texture);
@@ -541,6 +553,7 @@ public class RoutingPanel {
         loadData();
         reloadObjectTable();
         refreshRouteCombos();
+        onObjectsChanged.run();
     }
 
     private Planet findPlanetById(int planetId) {
@@ -552,6 +565,135 @@ public class RoutingPanel {
 
     private double calculateObjectSpeed(Planet planet, double altitudeKm) {
         return PhysicsService.calculateVelocity(planet.getMass(), planet.getRadius(), altitudeKm);
+    }
+
+    private void validateNoPlanetCollision(Planet parent, double latitude, double longitude, double altitudeKm) {
+        double parentVisualRadius = simulationPlanetRadius(parent);
+        double orbitRadius = parentVisualRadius + altitudeKm / 300.0 + 50;
+        double[] parentCenter = simulationPlanetCenter(parent);
+        double[] localSatellite = simulationSatelliteLocalPosition(orbitRadius, latitude, longitude);
+        double[] satellitePosition = new double[]{
+                parentCenter[0] + localSatellite[0],
+                parentCenter[1] + localSatellite[1],
+                parentCenter[2] + localSatellite[2]
+        };
+
+        for (Planet planet : planets) {
+            double[] planetCenter = simulationPlanetCenter(planet);
+            double safeDistance = simulationPlanetRadius(planet) + SATELLITE_COLLISION_RADIUS;
+            double initialDistance = distance3(satellitePosition, planetCenter);
+            double orbitDistance = distanceFromPointToSatelliteOrbit(
+                    new double[]{
+                            planetCenter[0] - parentCenter[0],
+                            planetCenter[1] - parentCenter[1],
+                            planetCenter[2] - parentCenter[2]
+                    },
+                    orbitRadius,
+                    latitude
+            );
+
+            if (initialDistance <= safeDistance || orbitDistance <= safeDistance) {
+                throw new IllegalArgumentException(
+                        "Vị trí/quỹ đạo vệ tinh va chạm với " + planet.getName()
+                                + ". Hãy đổi vĩ độ, kinh độ hoặc độ cao."
+                );
+            }
+        }
+    }
+
+    private double simulationPlanetRadius(Planet planet) {
+        return planet.getName().equals("Mặt Trời") ? 320 : Math.pow(planet.getRadius(), 0.4) * 4 + 5;
+    }
+
+    private double simulationPlanetOrbitRadius(Planet planet) {
+        return switch (planet.getName()) {
+            case "Mặt Trời" -> 0;
+            case "Sao Thủy" -> 1800;
+            case "Sao Kim" -> 3000;
+            case "Trái Đất" -> 4500;
+            case "Mặt Trăng" -> 0;
+            case "Sao Hỏa" -> 6000;
+            case "Sao Mộc" -> 8200;
+            case "Sao Thổ" -> 10800;
+            case "Sao Thiên Vương" -> 13400;
+            case "Sao Hải Vương" -> 16000;
+            default -> 900 + Math.sqrt(Math.max(0, planet.getDistanceFromSun())) * 210;
+        };
+    }
+
+    private double simulationInitialOrbitAngle(Planet planet) {
+        return switch (planet.getName()) {
+            case "Sao Thủy" -> 210;
+            case "Sao Kim" -> 145;
+            case "Trái Đất" -> 95;
+            case "Mặt Trăng" -> 95;
+            case "Sao Hỏa" -> 35;
+            case "Sao Mộc" -> 315;
+            case "Sao Thổ" -> 255;
+            case "Sao Thiên Vương" -> 20;
+            case "Sao Hải Vương" -> 285;
+            default -> 0;
+        };
+    }
+
+    private double[] simulationPlanetCenter(Planet planet) {
+        if (planet.getName().equals("Mặt Trăng")) {
+            Planet earth = findPlanetByName("Trái Đất");
+            double[] earthCenter = earth == null ? new double[]{0, 0, 0} : simulationPlanetCenter(earth);
+            double moonAngle = Math.toRadians(simulationInitialOrbitAngle(planet) * 4);
+            return new double[]{
+                    earthCenter[0] + MOON_ORBIT_RADIUS * Math.cos(moonAngle),
+                    0,
+                    earthCenter[2] + MOON_ORBIT_RADIUS * Math.sin(moonAngle)
+            };
+        }
+
+        double angle = Math.toRadians(simulationInitialOrbitAngle(planet));
+        double radius = simulationPlanetOrbitRadius(planet);
+        return new double[]{
+                radius * Math.cos(angle),
+                0,
+                radius * Math.sin(angle)
+        };
+    }
+
+    private Planet findPlanetByName(String name) {
+        return planets.stream()
+                .filter(p -> name.equals(p.getName()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private double[] simulationSatelliteLocalPosition(double orbitRadius, double latitude, double longitude) {
+        double phase = Math.toRadians(longitude);
+        double inclination = Math.toRadians(latitude);
+        return new double[]{
+                orbitRadius * Math.cos(phase),
+                orbitRadius * Math.sin(phase) * Math.sin(inclination),
+                orbitRadius * Math.sin(phase) * Math.cos(inclination)
+        };
+    }
+
+    private double distanceFromPointToSatelliteOrbit(double[] pointRelativeToParent,
+                                                     double orbitRadius,
+                                                     double inclinationDeg) {
+        double inclination = Math.toRadians(inclinationDeg);
+        double planeDistance = Math.abs(
+                -pointRelativeToParent[1] * Math.cos(inclination)
+                        + pointRelativeToParent[2] * Math.sin(inclination)
+        );
+        double pointDistanceSq = pointRelativeToParent[0] * pointRelativeToParent[0]
+                + pointRelativeToParent[1] * pointRelativeToParent[1]
+                + pointRelativeToParent[2] * pointRelativeToParent[2];
+        double inPlaneDistance = Math.sqrt(Math.max(0, pointDistanceSq - planeDistance * planeDistance));
+        return Math.sqrt(Math.pow(inPlaneDistance - orbitRadius, 2) + planeDistance * planeDistance);
+    }
+
+    private double distance3(double[] a, double[] b) {
+        double dx = a[0] - b[0];
+        double dy = a[1] - b[1];
+        double dz = a[2] - b[2];
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     private boolean isRoutingObject(SpaceObject object) {
