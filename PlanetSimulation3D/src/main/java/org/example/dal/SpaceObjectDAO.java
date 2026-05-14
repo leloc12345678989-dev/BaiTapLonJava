@@ -76,10 +76,37 @@ public class SpaceObjectDAO {
     }
 
     public boolean delete(int objectId) {
-        String sql = "DELETE FROM SpaceObjects WHERE ObjectID = ?";
-        try (Connection conn = conn(); PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setInt(1, objectId);
-            return ps.executeUpdate() > 0;
+        String deleteLinksSql = "DELETE FROM SatelliteLinks WHERE SatA_ID = ? OR SatB_ID = ?";
+        String deleteObjectSql = "DELETE FROM SpaceObjects WHERE ObjectID = ?";
+
+        try (Connection conn = conn()) {
+            boolean oldAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try {
+                try (PreparedStatement ps = conn.prepareStatement(deleteLinksSql)) {
+                    ps.setInt(1, objectId);
+                    ps.setInt(2, objectId);
+                    ps.executeUpdate();
+                }
+
+                int deletedRows;
+                try (PreparedStatement ps = conn.prepareStatement(deleteObjectSql)) {
+                    ps.setInt(1, objectId);
+                    deletedRows = ps.executeUpdate();
+                }
+
+                if (deletedRows > 0) {
+                    conn.commit();
+                    return true;
+                }
+
+                conn.rollback();
+            } catch (Exception e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(oldAutoCommit);
+            }
         } catch (Exception e) {
             e.printStackTrace();
         }
