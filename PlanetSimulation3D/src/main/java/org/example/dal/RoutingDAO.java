@@ -117,16 +117,20 @@ public class RoutingDAO {
         List<String[]> rows = new ArrayList<>();
         String sql = """
             SELECT TOP (?) rh.RouteID,
-                   gs1.StationName  AS Source,
-                   gs2.StationName  AS Dest,
+                   COALESCE(gs1.StationName, rh.StartPointName,
+                            CASE WHEN rh.SourceStationID IS NULL THEN N'(deleted station)'
+                                 ELSE CONCAT(N'Station#', rh.SourceStationID) END) AS Source,
+                   COALESCE(gs2.StationName, rh.EndPointName,
+                            CASE WHEN rh.DestStationID IS NULL THEN N'(deleted station)'
+                                 ELSE CONCAT(N'Station#', rh.DestStationID) END) AS Dest,
                    rh.HopCount,
                    CAST(rh.TotalDistance_km AS DECIMAL(10,1)) AS Dist,
                    rh.Status,
                    CONVERT(VARCHAR(19), rh.CreatedAt, 120) AS CreatedAt,
                    rh.RoutePath
             FROM   RoutingHistory rh
-            JOIN   GroundStations gs1 ON rh.SourceStationID = gs1.StationID
-            JOIN   GroundStations gs2 ON rh.DestStationID   = gs2.StationID
+            LEFT JOIN GroundStations gs1 ON rh.SourceStationID = gs1.StationID
+            LEFT JOIN GroundStations gs2 ON rh.DestStationID   = gs2.StationID
             ORDER  BY rh.CreatedAt DESC
             """;
         try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {

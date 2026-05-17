@@ -71,10 +71,68 @@ public class GroundStationDAO {
 
     // ── DELETE ───────────────────────────────────────────────
     public boolean delete(int stationId) {
-        String sql = "DELETE FROM GroundStations WHERE StationID=?";
-        try (Connection c = conn(); PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setInt(1, stationId);
-            return ps.executeUpdate() > 0;
+        String keepSourceNameSql = """
+            UPDATE rh
+            SET StartPointName = COALESCE(rh.StartPointName, gs.StationName)
+            FROM RoutingHistory rh
+            JOIN GroundStations gs ON gs.StationID = rh.SourceStationID
+            WHERE rh.SourceStationID = ?
+            """;
+        String keepDestNameSql = """
+            UPDATE rh
+            SET EndPointName = COALESCE(rh.EndPointName, gs.StationName)
+            FROM RoutingHistory rh
+            JOIN GroundStations gs ON gs.StationID = rh.DestStationID
+            WHERE rh.DestStationID = ?
+            """;
+        String unlinkHistorySql = """
+            UPDATE RoutingHistory
+            SET SourceStationID = CASE WHEN SourceStationID = ? THEN NULL ELSE SourceStationID END,
+                DestStationID = CASE WHEN DestStationID = ? THEN NULL ELSE DestStationID END
+            WHERE SourceStationID = ? OR DestStationID = ?
+            """;
+        String deleteStationSql = "DELETE FROM GroundStations WHERE StationID=?";
+
+        try (Connection c = conn()) {
+            boolean oldAutoCommit = c.getAutoCommit();
+            c.setAutoCommit(false);
+            try {
+                try (PreparedStatement ps = c.prepareStatement(keepSourceNameSql)) {
+                    ps.setInt(1, stationId);
+                    ps.executeUpdate();
+                }
+
+                try (PreparedStatement ps = c.prepareStatement(keepDestNameSql)) {
+                    ps.setInt(1, stationId);
+                    ps.executeUpdate();
+                }
+
+                try (PreparedStatement ps = c.prepareStatement(unlinkHistorySql)) {
+                    ps.setInt(1, stationId);
+                    ps.setInt(2, stationId);
+                    ps.setInt(3, stationId);
+                    ps.setInt(4, stationId);
+                    ps.executeUpdate();
+                }
+
+                int deletedRows;
+                try (PreparedStatement ps = c.prepareStatement(deleteStationSql)) {
+                    ps.setInt(1, stationId);
+                    deletedRows = ps.executeUpdate();
+                }
+
+                if (deletedRows > 0) {
+                    c.commit();
+                    return true;
+                }
+
+                c.rollback();
+            } catch (Exception e) {
+                c.rollback();
+                throw e;
+            } finally {
+                c.setAutoCommit(oldAutoCommit);
+            }
         } catch (Exception e) { e.printStackTrace(); }
         return false;
     }

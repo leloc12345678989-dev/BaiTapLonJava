@@ -244,8 +244,10 @@ public class RoutingPanel {
             GroundStation sel = tblStations.getSelectionModel().getSelectedItem();
             if (sel == null) { alert("Chọn dòng cần xóa!"); return; }
             if (gsDAO.delete(sel.getStationId())) {
-                loadData(); reloadStationTable(); refreshRouteCombos();
+                loadData(); reloadStationTable(); refreshRouteCombos(); refreshHistory();
                 alert("✅ Đã xóa: " + sel.getStationName());
+            } else {
+                alert("Không xóa được trạm. Vui lòng kiểm tra console/log.");
             }
         });
 
